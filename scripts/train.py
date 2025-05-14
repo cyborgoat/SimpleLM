@@ -8,13 +8,13 @@ from src.rl import rl_step
 
 # --- Hyperparameters ---
 D_MODEL = 96
-N_HEADS = 4
-N_LAYERS = 4
+N_HEADS = 8
+N_LAYERS = 5
 D_FF = 192
-MAX_SEQ_LEN = 40
-SFT_EPOCHS = 200
+MAX_SEQ_LEN = 48
+SFT_EPOCHS = 600
 RL_ITERATIONS = 400
-BATCH_SIZE_SFT = 4
+BATCH_SIZE_SFT = 6
 LEARNING_RATE_SFT = 1e-3
 LEARNING_RATE_RL = 3e-4
 
@@ -67,22 +67,21 @@ optimizer_reward = optim.Adam(reward_model.parameters(), lr=LEARNING_RATE_SFT)
 def reward_model_train():
     print("Starting Reward Model training...")
     reward_model.train()
-    for epoch in range(10):
+    for epoch in range(30):
         total_loss = 0
-        for prompt, target in sft_data:
-            # Positive: SFT target
-            prompt_ids = tokenize(prompt)
-            target_ids = tokenize(target)
-            prompt_ids = pad_sequence(prompt_ids, MAX_SEQ_LEN)
-            target_ids = pad_sequence(target_ids, MAX_SEQ_LEN)
-            input_ids = torch.tensor([prompt_ids], dtype=torch.long).to(device)
-            target_ids_tensor = torch.tensor([target_ids], dtype=torch.long).to(device)
+        # Batch processing
+        for i in range(0, len(sft_data), BATCH_SIZE_SFT):
+            batch = sft_data[i:i+BATCH_SIZE_SFT]
+            prompt_batch = [tokenize(prompt) for prompt, target in batch]
+            target_batch = [tokenize(target) for prompt, target in batch]
+            prompt_batch = [pad_sequence(ids, MAX_SEQ_LEN) for ids in prompt_batch]
+            target_batch = [pad_sequence(ids, MAX_SEQ_LEN) for ids in target_batch]
+            input_ids = torch.tensor(prompt_batch, dtype=torch.long).to(device)
+            target_ids_tensor = torch.tensor(target_batch, dtype=torch.long).to(device)
             # Get hidden states for target
             with torch.no_grad():
                 logits, hidden_states = actor_model(input_ids, return_hidden=True)
-            # Mask for valid tokens (not padding)
             mask = (target_ids_tensor != 0).float()
-            # Reward should be high for SFT targets
             pos_reward = reward_model(hidden_states, mask=mask)
             # Negative: random tokens
             rand_ids = torch.randint(1, VOCAB_SIZE, target_ids_tensor.shape, device=device)
@@ -92,7 +91,6 @@ def reward_model_train():
             neg_reward = reward_model(rand_hidden, mask=rand_mask)
             # Loss: margin ranking (pos > neg by margin)
             margin = 1.0
-            # Reshape for margin_ranking_loss
             pos_reward_flat = pos_reward.view(-1)
             neg_reward_flat = neg_reward.view(-1)
             target = torch.ones_like(pos_reward_flat)
@@ -102,7 +100,7 @@ def reward_model_train():
             optimizer_reward.step()
             total_loss += loss.item()
         if (epoch + 1) % 2 == 0 or epoch == 0:
-            print(f"Reward Model Epoch {epoch+1}/10, Loss: {total_loss / len(sft_data):.4f}")
+            print(f"Reward Model Epoch {epoch+1}/10, Loss: {total_loss / (len(sft_data)/BATCH_SIZE_SFT):.4f}")
     print("Reward Model training complete.")
 
 # --- SFT Training ---
@@ -111,13 +109,16 @@ def sft_train():
     for epoch in range(SFT_EPOCHS):
         np.random.shuffle(sft_data)
         total_loss = 0
-        for prompt, target in sft_data:
-            prompt_ids = tokenize(prompt)
-            target_ids = tokenize(target)
-            prompt_ids = pad_sequence(prompt_ids, MAX_SEQ_LEN)
-            target_ids = pad_sequence(target_ids, MAX_SEQ_LEN)
-            input_ids = torch.tensor([prompt_ids], dtype=torch.long).to(device)
-            target_ids = torch.tensor([target_ids], dtype=torch.long).to(device)
+        # Batch processing
+        for i in range(0, len(sft_data), BATCH_SIZE_SFT):
+            batch = sft_data[i:i+BATCH_SIZE_SFT]
+            prompt_batch = [tokenize(prompt) for prompt, target in batch]
+            target_batch = [tokenize(target) for prompt, target in batch]
+            # Pad all sequences in batch
+            prompt_batch = [pad_sequence(ids, MAX_SEQ_LEN) for ids in prompt_batch]
+            target_batch = [pad_sequence(ids, MAX_SEQ_LEN) for ids in target_batch]
+            input_ids = torch.tensor(prompt_batch, dtype=torch.long).to(device)
+            target_ids = torch.tensor(target_batch, dtype=torch.long).to(device)
             logits = actor_model(input_ids)
             loss = torch.nn.functional.cross_entropy(logits.view(-1, VOCAB_SIZE), target_ids.view(-1), ignore_index=0)
             optimizer_actor.zero_grad()
@@ -125,19 +126,33 @@ def sft_train():
             optimizer_actor.step()
             total_loss += loss.item()
         if (epoch + 1) % 25 == 0 or epoch == 0:
-            print(f"Epoch {epoch+1}/{SFT_EPOCHS}, Loss: {total_loss / len(sft_data):.4f}")
+            print(f"Epoch {epoch+1}/{SFT_EPOCHS}, Loss: {total_loss / (len(sft_data)/BATCH_SIZE_SFT):.4f}")
     print("SFT training complete.")
 
 # --- RL Training (PPO) ---
 def rl_train():
     print("Starting RL (PPO) training...")
     for iteration in range(RL_ITERATIONS):
-        prompt, target = sft_data[np.random.randint(len(sft_data))]
-        loss, critic_loss, reward, generated = rl_step(
-            actor_model, critic_model, optimizer_actor, optimizer_critic, prompt, reference=target, device=device, max_len=MAX_SEQ_LEN, reward_model=reward_model
-        )
+        # Batch processing for RL
+        prompts, targets = [], []
+        for _ in range(BATCH_SIZE_SFT):
+            p, t = sft_data[np.random.randint(len(sft_data))]
+            prompts.append(p)
+            targets.append(t)
+        # Call rl_step in batch (you may need to update rl_step for true batching; for now, average results)
+        batch_loss, batch_critic_loss, batch_reward = 0, 0, 0
+        for prompt, target in zip(prompts, targets):
+            loss, critic_loss, reward, generated = rl_step(
+                actor_model, critic_model, optimizer_actor, optimizer_critic, prompt, reference=target, device=device, max_len=MAX_SEQ_LEN, reward_model=reward_model
+            )
+            batch_loss += loss
+            batch_critic_loss += critic_loss
+            batch_reward += reward
+        batch_loss /= BATCH_SIZE_SFT
+        batch_critic_loss /= BATCH_SIZE_SFT
+        batch_reward /= BATCH_SIZE_SFT
         if (iteration + 1) % 25 == 0 or iteration == 0:
-            print(f"RL Iter {iteration+1}/{RL_ITERATIONS}, Actor Loss: {loss:.4f}, Critic Loss: {critic_loss:.4f}, Reward: {reward:.2f}")
+            print(f"RL Iter {iteration+1}/{RL_ITERATIONS}, Actor Loss: {batch_loss:.4f}, Critic Loss: {batch_critic_loss:.4f}, Reward: {batch_reward:.2f}")
     print("RL training complete.")
 
 if __name__ == "__main__":

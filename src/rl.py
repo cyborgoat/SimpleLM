@@ -68,7 +68,8 @@ def rl_step(actor_model, critic_model, optimizer_actor, optimizer_critic, prompt
         input_ids_tensor = torch.tensor([input_ids], dtype=torch.long).to(device)
         _, hidden_states_new = actor_model(input_ids_tensor, return_hidden=True)
     values_new = critic_model(hidden_states_new[:, :-1, :])
-    critic_loss = F.mse_loss(values_new.mean(), torch.tensor([reward], dtype=torch.float).to(device).detach())
+    # Ensure both arguments are scalars to avoid shape warning
+    critic_loss = F.mse_loss(values_new.mean().view([]), torch.tensor(reward, dtype=torch.float, device=values_new.device).view([]).detach())
     optimizer_critic.zero_grad()
     critic_loss.backward()
     optimizer_critic.step()

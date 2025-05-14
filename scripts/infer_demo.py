@@ -4,9 +4,9 @@ from src.tokenizer import tokenize, detokenize, VOCAB_SIZE, SOS_TOKEN, EOS_TOKEN
 
 D_MODEL = 96
 N_HEADS = 4
-N_LAYERS = 4
+N_LAYERS = 5
 D_FF = 192
-MAX_SEQ_LEN = 40
+MAX_SEQ_LEN = 48
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

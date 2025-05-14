@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-DROPOUT = 0.2
-MAX_SEQ_LEN = 32
+DROPOUT = 0.1
+MAX_SEQ_LEN = 40
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=MAX_SEQ_LEN):
